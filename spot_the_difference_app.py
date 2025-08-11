@@ -297,33 +297,33 @@ def make_puzzle(
         pos.append("left" if cx < 0.33 else "right" if cx > 0.66 else "center")
         msumm.append({"idx": i, "area_pct": round(100.0 * am.area / (H*W), 2), "pos": "-".join(pos)})
 
-    plan = plan_with_llm(msumm, n_changes, seed) if use_llm else None
-    chosen = []
-    if plan:
-        # 계획된 인덱스만
-        valid_idx = {p["idx"] for p in plan if 0 <= p["idx"] < len(auto_masks)}
-        chosen = [auto_masks[i] for i in valid_idx]
+    # --- (A) plan dict로 만들기
+    plan_map = None
+    if use_llm:
+        p = plan_with_llm(msumm, n_changes, seed)
+        if p:
+            plan_map = {int(it["idx"]): it["edit"] for it in p if "idx" in it and "edit" in it}
+
+    # --- (B) 선택 로직: (idx, AutoMask) 튜플
+    chosen: List[Tuple[int, AutoMask]] = []
+    if plan_map:
+        valid_idx = [i for i in plan_map.keys() if 0 <= i < len(auto_masks)]
+        chosen = [(i, auto_masks[i]) for i in valid_idx]
     else:
-        # 랜덤 선택
         k = min(n_changes, len(auto_masks))
-        chosen = random.sample(auto_masks, k=k)
+        idxs = random.sample(range(len(auto_masks)), k=k)
+        chosen = [(i, auto_masks[i]) for i in idxs]
 
     out = bgr.copy()
     diff_masks: List[np.ndarray] = []
 
-    for am in chosen:
+    # --- (C) 적용 루프: idx 사용 (배열 비교로 인한 ambiguous 에러 방지)
+    for idx, am in chosen:
         m = am.mask.copy()
-        edit = None
-        if plan:
-            # 해당 마스크의 편집 찾기
-            found = [p for p in plan if p["idx"] == auto_masks.index(am)]
-            if found:
-                edit = found[0]["edit"]
-
+        edit = plan_map.get(idx) if plan_map else None
         if edit is None:
             edit = random.choice(list(EDIT_FUNCS))
 
-        # 편집 적용
         if edit == "erase":
             new_img = inpaint_region(out, m, radius=5)
             changed = m.copy()
@@ -343,24 +343,19 @@ def make_puzzle(
             dx = random.randint(-move_px, move_px)
             dy = random.randint(-move_px, move_px)
             new_img = translate_region(out, m, dx=dx, dy=dy)
-            # 이동은 원래 위치 + 새 위치 모두 차이
+
             moved_mask = np.zeros_like(m, dtype=bool)
-            # 새 위치 대략 bbox 이동으로 근사한 솔루션 마스크 (충분히 정답표시용)
             x, y, w, h = cv2.boundingRect(m.astype(np.uint8))
             tx = np.clip(x + dx, 0, out.shape[1]-w)
             ty = np.clip(y + dy, 0, out.shape[0]-h)
             moved_mask[ty:ty+h, tx:tx+w] = True
             changed = union_masks(m, moved_mask)
 
-        else:
-            new_img = out
-            changed = m.copy()
-
         out = new_img
         diff_masks.append(changed)
 
-    answer = draw_answer_boxes(out, diff_masks)
-    return out, answer, diff_masks
+        answer = draw_answer_boxes(out, diff_masks)
+        return out, answer, diff_masks
 
 
 # =========================
