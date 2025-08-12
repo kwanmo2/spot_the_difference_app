@@ -8,10 +8,22 @@ import cv2
 import numpy as np
 from PIL import Image
 
+import torch
+
 import streamlit as st
 
 # SAM
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
+
+
+def _get_device() -> str:
+    """Return the best available device (CUDA, Metal or CPU)."""
+    if torch.cuda.is_available():
+        return "cuda"
+    mps = getattr(torch.backends, "mps", None)
+    if mps and mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 # =========================
@@ -77,7 +89,7 @@ def load_sam(checkpoint: str, model_type: str):
     if not os.path.exists(checkpoint):
         raise FileNotFoundError(f"SAM checkpoint not found: {checkpoint}")
     sam = sam_model_registry[model_type](checkpoint=checkpoint)
-    sam.to("cuda" if cv2.cuda.getCudaEnabledDeviceCount() > 0 else "cpu")
+    sam.to(_get_device())
     return SamAutomaticMaskGenerator(sam, **MASK_GEN_KW)
 
 
